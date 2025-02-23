@@ -1,0 +1,150 @@
+@page "/userdetails"
+@using Microsoft.AspNetCore.Components.WebAssembly.Authentication
+@using Microsoft.Graph
+@using Microsoft.Graph.Models
+@inject IAccessTokenProvider TokenProvider
+@inject NavigationManager Navigation
+
+<h3>User Search</h3>
+
+<div class="form-group mb-3">
+    <input type="text" class="form-control" @bind="searchTerm" @bind:event="oninput" @onkeyup="HandleSearch" placeholder="Search users..." />
+</div>
+
+@if (isLoading)
+{
+    <div class="spinner-border" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+}
+
+@if (searchResults?.Count > 0)
+{
+    <div class="list-group">
+        @foreach (var user in searchResults)
+        {
+            <button class="list-group-item list-group-item-action" @onclick="() => SelectUser(user)">
+                @user.DisplayName - @user.Mail
+            </button>
+        }
+    </div>
+}
+
+@if (selectedUser != null)
+{
+    <div class="card mt-4">
+        <div class="card-body">
+            <h4 class="card-title">@selectedUser.DisplayName</h4>
+            <p class="card-text">Email: @selectedUser.Mail</p>
+            <p class="card-text">Job Title: @selectedUser.JobTitle</p>
+            <p class="card-text">Department: @selectedUser.Department</p>
+            @if (managerDetails != null)
+            {
+                <p class="card-text">Manager: @managerDetails.DisplayName</p>
+            }
+            <p class="card-text">Phone: @selectedUser.BusinessPhones?.FirstOrDefault()</p>
+            <p class="card-text">Mobile: @selectedUser.MobilePhone</p>
+        </div>
+    </div>
+}
+
+@code {
+    private string searchTerm = "";
+    private bool isLoading = false;
+    private List<User> searchResults = new();
+    private User? selectedUser;
+    private User? managerDetails;
+    private GraphServiceClient? graphClient;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InitializeGraphClientAsync();
+    }
+
+    private async Task InitializeGraphClientAsync()
+    {
+        var tokenResult = await TokenProvider.RequestAccessToken(
+            new AccessTokenRequestOptions 
+            { 
+                Scopes = new[] { 
+                    "https://graph.microsoft.com/User.Read.All",
+                    "https://graph.microsoft.com/Directory.Read.All",
+                    "https://graph.microsoft.com/User.ReadBasic.All"
+                } 
+            });
+
+        if (tokenResult.TryGetToken(out var token))
+        {
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Authorization = 
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Value);
+            
+            graphClient = new GraphServiceClient(httpClient);
+        }
+    }
+
+    private async Task HandleSearch()
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm) || searchTerm.Length < 3) return;
+        
+        try
+        {
+            isLoading = true;
+            if (graphClient != null)
+            {
+                var result = await graphClient.Users
+                    .GetAsync(requestConfiguration => {
+                        requestConfiguration.QueryParameters.Select = new[] { 
+                            "id", "displayName", "mail", "jobTitle", 
+                            "department", "businessPhones", "mobilePhone" 
+                        };
+                        requestConfiguration.QueryParameters.Filter = $"startsWith(displayName,'{searchTerm}') or startsWith(mail,'{searchTerm}')";
+                        requestConfiguration.QueryParameters.Top = 10;
+                    });
+
+                if (result?.Value != null)
+                {
+                    searchResults = result.Value.ToList();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error searching users: {ex.Message}");
+            searchResults.Clear();
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SelectUser(User user)
+    {
+        try
+        {
+            if (graphClient != null)
+            {
+                selectedUser = await graphClient.Users[user.Id]
+                    .GetAsync(requestConfiguration => {
+                        requestConfiguration.QueryParameters.Select = new[] { 
+                            "displayName", "mail", "jobTitle", "department", 
+                            "businessPhones", "mobilePhone", "manager" 
+                        };
+                    });
+
+                if (selectedUser?.Manager != null)
+                {
+                    // Fetch manager details separately
+                    managerDetails = await graphClient.Users[selectedUser.Manager.Id]
+                        .GetAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error fetching user details: {ex.Message}");
+        }
+    }
+}
